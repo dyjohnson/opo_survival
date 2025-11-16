@@ -46,30 +46,32 @@ This script creates a long form longitudinal dataset which tracks heart transpla
 
 The script also creates the first paragraph of the results section as well as all the numbers for Figure 1.
 
-Our project used the quarter 3 2018 SAF:
+Our project used the quarter 1 2023 SAF:
 ```{r read_in_SAS}
 
 # read in the SRTR SAF files
-cand_thor <- read_sas("SAF 2018 Q3/cand_thor.sas7bdat", NULL) %>%  
+cand_thor <- read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/cand_thor.sas7bdat', NULL) %>%  
   zap_formats() %>% zap_labels()
 
-tx_hr <- read_sas("SAF 2018 Q3/tx_hr.sas7bdat", NULL) %>%  
+tx_hr <- read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/tx_hr.sas7bdat', NULL) %>%  
   zap_formats() %>% zap_labels()
 
-stathist_thor <- read_sas("SAF 2018 Q3/stathist_thor.sas7bdat", NULL) %>%  
+stathist_thor <- read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/stathist_thor.sas7bdat', NULL) %>%  
   zap_formats() %>% zap_labels()
 
-statjust_hr1a <- read_sas("SAF 2018 Q3/statjust_hr1a.sas7bdat", NULL) %>%  
+statjust_hr1a <- read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/statjust_hr1a.sas7bdat', NULL) %>%  
   zap_formats() %>% zap_labels()
 
-statjust_hr1b <- read_sas("SAF 2018 Q3/statjust_hr1b.sas7bdat", NULL) %>% 
+statjust_hr1b <- read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/statjust_hr1b.sas7bdat', NULL) %>% 
   zap_formats() %>% zap_labels()
 
-donor_deceased <- read_sas("SAF 2018 Q3/donor_deceased.sas7bdat", NULL) %>%  
+donor_deceased <- read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/donor_deceased.sas7bdat', NULL) %>%  
   zap_formats() %>% zap_labels()
 
+institution <- read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/institution.sas7bdat', NULL) %>%  
+  zap_formats() %>% zap_labels()
 
-institution <- read_sas("SAF 2018 Q3/institution.sas7bdat", NULL) %>%  
+hist_opo_txc <- read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/hist_opo_txc.sas7bdat', NULL) %>%  
   zap_formats() %>% zap_labels()
 ```
 
@@ -96,8 +98,16 @@ init_list <- cand_thor %>%
   mutate(list_year = format(list_date, "%Y")) %>%
 	filter(list_year>=start_year & list_year <=end_year & WL_ORG == "HR")  %>% 
   mutate(status = CAN_INIT_STAT, 
-         OPO = CAN_LISTING_OPO_ID,
+         #OPO = CAN_LISTING_OPO_ID,
          date_start = list_date)
+
+#add OPO
+init_list <- init_list %>%
+  left_join(hist_opo_txc, 
+            by = c("CAN_LISTING_CTR_CD" = "TXC_CTR_CD",
+                   "CAN_LISTING_CTR_TY" = "TXC_CTR_TY")) %>%
+  filter(list_date >= START_DT & list_date <= END_DT) %>%
+  mutate(OPO = SERVED_OPO_CD)
 
 #remove peds
 if (peds == FALSE){
@@ -120,7 +130,7 @@ if (multi == FALSE){
 #remove candidates listed at low volume centers
 init_list <- init_list %>% 
   mutate(transplant = ifelse(CAN_REM_CD == 4, 1, 0)) %>%
-	group_by(CAN_LISTING_CTR_ID) %>% 
+	group_by(CAN_LISTING_CTR_CD, CAN_LISTING_CTR_TY) %>% 
   mutate(tot_tx = sum(transplant, na.rm = TRUE)) %>% ungroup() 
 
 
@@ -178,7 +188,7 @@ Candidate covariates required to assign initial listing status under the three-s
 Additional covariates for revision include Age, gender, BMI, Blood type, Cardiac Diagnosis, and sensitization
 ```{r select_key_init_vars, echo = TRUE }
 init_list <- init_list %>% 
-  select(PX_ID, OPO, CAN_LISTING_CTR_ID, status, 
+  select(PX_ID, OPO, CAN_LISTING_CTR_CD, CAN_LISTING_CTR_TY, status, 
          date_start, list_year, list_date, dead_date, final_dt, to_die,
          CAN_DGN,
          CAN_REM_CD, PERS_OPTN_DEATH_DT, PERS_SSA_DEATH_DT,
@@ -256,7 +266,7 @@ tx <- tx_hr %>% filter(PX_ID %in% init_list$PX_ID) %>%
 	       status = CAN_LAST_STAT) %>% 
 	arrange(PX_ID, tx_date)
 
-tx <- tx %>% select(PX_ID, REC_OPO_ID, REC_CTR_ID, DONOR_ID, status, tx_date, CAN_RACE,
+tx <- tx %>% select(PX_ID, REC_OPO_ID, REC_CTR_CD, REC_CTR_TY, DONOR_ID, status, tx_date, CAN_RACE,
 	CAN_DIAB_TY, CAN_DIAB,
 	REC_CREAT, REC_DIAL,
 	REC_DGN, 
@@ -399,7 +409,7 @@ just_1a <- distinct(just_1a) %>%
 
 
 #select key variables
-just_1a <- just_1a %>% select(PX_ID, CAN_LISTING_CTR_ID, 
+just_1a <- just_1a %>% select(PX_ID, CAN_LISTING_CTR_CD, CAN_LISTING_CTR_TY, 
   status, date_start, CANHX_STAT_TY, CANHX_FORM_STAT, 
 	CANHX_DIALYSIS, CANHX_LAB_SERUM_CREAT, 
 	CANHX_ADULT_CRITERIA_A, CANHX_ADULT_CRITERIA_B, 
@@ -438,7 +448,7 @@ just_1b <- distinct(just_1b) %>%
   distinct(PX_ID, date_start, .keep_all = TRUE)
 
 just_1b <- just_1b %>% 
-  select(PX_ID, CAN_LISTING_CTR_ID, status, date_start, 
+  select(PX_ID, CAN_LISTING_CTR_CD, CAN_LISTING_CTR_TY, status, date_start, 
 	low_dose_ino, stable_lvad, except_1b
 	)
 
@@ -554,16 +564,35 @@ ts %>% select(PX_ID, status,tx, t_1, t_2, dead, date, list_date, final_dt)
 ```{r center_OPO}
 #create center and OPO variables
 ts <- ts %>% mutate(
-  center = case_when(
-  	is.na(CAN_LISTING_CTR_ID.init) == FALSE ~ CAN_LISTING_CTR_ID.init,
-  	is.na(CAN_LISTING_CTR_ID.j1a) == FALSE ~ CAN_LISTING_CTR_ID.j1a,
-  	is.na(REC_CTR_ID) == FALSE ~ REC_CTR_ID
+  center_cd = case_when(
+  	is.na(CAN_LISTING_CTR_CD.init) == FALSE ~ CAN_LISTING_CTR_CD.init,
+  	is.na(CAN_LISTING_CTR_CD.j1a) == FALSE ~ CAN_LISTING_CTR_CD.j1a,
+  	is.na(REC_CTR_CD) == FALSE ~ REC_CTR_CD
 	), 
-  center = na.locf(center))
+  center_cd = na.locf(center_cd),
+  center_ty = case_when(
+  	is.na(CAN_LISTING_CTR_TY.init) == FALSE ~ CAN_LISTING_CTR_TY.init,
+  	is.na(CAN_LISTING_CTR_TY.j1a) == FALSE ~ CAN_LISTING_CTR_TY.j1a,
+  	is.na(REC_CTR_TY) == FALSE ~ REC_CTR_TY
+	), 
+  center_ty = na.locf(center_ty))
+
+ts <- ts %>%
+  left_join(institution, 
+            by = c("REC_CTR_CD" = "CTR_CD",
+                   "REC_CTR_TY" = "CTR_TY")) %>%
+  mutate(center = CTR_ID)
+
+ts <- ts %>%
+  left_join(hist_opo_txc, 
+            by = c("REC_CTR_CD" = "TXC_CTR_CD",
+                   "REC_CTR_TY" = "TXC_CTR_TY")) %>%
+  filter(list_date >= START_DT & list_date <= END_DT) %>%
+  mutate(REC_OPO = SERVED_OPO_CD)
 
 ts <- ts %>% mutate(
   OPO = case_when(
-	is.na(REC_OPO_ID) == FALSE ~ REC_OPO_ID,
+	is.na(REC_OPO) == FALSE ~ REC_OPO,
 	TRUE ~ OPO
 	),  OPO = na.locf(OPO))
 
@@ -1121,3 +1150,10 @@ write.csv(cont_vars_, "cont_vars_.csv")
 ```
 
 
+``` {r}
+hist_opo_txc %>%
+  group_by(TXC_CTR_CD) %>%
+  summarize(n_unique_ty = n_distinct(TXC_CTR_TY),
+            .groups = "drop") %>%
+  filter(n_unique_ty > 1)
+```
