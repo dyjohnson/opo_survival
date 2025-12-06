@@ -583,12 +583,29 @@ ts <- ts %>%
                    "REC_CTR_TY" = "CTR_TY")) %>%
   mutate(center = CTR_ID)
 
+hist_opo_txc_clean <- hist_opo_txc %>%
+  arrange(TXC_CTR_CD, TXC_CTR_TY, SERVED_OPO_CD, SERVED_OPO_TY, START_DT, END_DT) %>%
+  group_by(TXC_CTR_CD, TXC_CTR_TY, SERVED_OPO_CD, SERVED_OPO_TY) %>%
+  mutate(
+    # Start a new group whenever the current interval does NOT overlap/meet the previous
+    new_group = cumsum(
+      START_DT > lag(END_DT, default = first(END_DT))
+    )
+  ) %>%
+  group_by(TXC_CTR_CD, TXC_CTR_TY, SERVED_OPO_CD, SERVED_OPO_TY, new_group) %>%
+  summarise(
+    START_DT = min(START_DT),
+    END_DT   = max(END_DT),
+    .groups = "drop"
+  )
+
 ts <- ts %>%
-  left_join(hist_opo_txc, 
+  left_join(hist_opo_txc_clean,
             by = c("REC_CTR_CD" = "TXC_CTR_CD",
                    "REC_CTR_TY" = "TXC_CTR_TY")) %>%
-  filter(list_date >= START_DT & list_date <= END_DT) %>%
+  filter(tx != 1 | (list_date >= START_DT & list_date <= END_DT)) %>%
   mutate(REC_OPO = SERVED_OPO_CD)
+
 
 ts <- ts %>% mutate(
   OPO = case_when(
@@ -1023,7 +1040,7 @@ We excluded `r comma(n_mults)` for multi-organ transplantation, `r comma(removed
 ```{r table_1}
 library(tableone)
 
-cand_thor <- read_sas("SAF 2018 Q3/cand_thor.sas7bdat", NULL) %>%  
+cand_thor <- read_sas("/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/cand_thor.sas7bdat", NULL) %>%  
   zap_formats() %>% zap_labels()
 
 for_table_one <- to_model %>% 
@@ -1149,11 +1166,27 @@ cont_vars_ <- print(CreateContTable(vars = cont_vars, data = for_table_one))
 write.csv(cont_vars_, "cont_vars_.csv")
 ```
 
-
+# Playground
 ``` {r}
-hist_opo_txc %>%
-  group_by(TXC_CTR_CD) %>%
-  summarize(n_unique_ty = n_distinct(TXC_CTR_TY),
-            .groups = "drop") %>%
-  filter(n_unique_ty > 1)
+library(dplyr)
+
+overlaps <- hist_opo_txc %>%
+  arrange(TXC_CTR_CD, TXC_CTR_TY, SERVED_OPO_CD, SERVED_OPO_TY, START_DT, END_DT) %>%
+  group_by(TXC_CTR_CD, TXC_CTR_TY) %>%
+  mutate(
+    next_start = lead(START_DT),
+    next_end   = lead(END_DT),
+    overlap = !is.na(next_start) & START_DT <= next_end & END_DT >= next_start
+  ) %>%
+  filter(overlap == TRUE) %>%
+  select(TXC_CTR_CD, TXC_CTR_TY, SERVED_OPO_CD, SERVED_OPO_TY,
+         START_DT, END_DT,
+         overlapped_with_start = next_start,
+         overlapped_with_end   = next_end)
+
+overlaps
+
+
+
+
 ```
