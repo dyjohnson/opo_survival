@@ -80,10 +80,13 @@ comma_p <- function(x){
 # Mixed-effects Cox Model Fitting
 
 ```{r data_in}
-to_model <- read.csv("clean_time_series_revise2006_2015.csv")
+to_model <- read.csv("/Users/danieljohnson/Library/CloudStorage/OneDrive-TheUniversityofChicago/Projects/OPO/opo_survival/clean_time_series_revise2006_2015.csv")
+
+# Convert OPO to factor if it isn't already, to ensure correct handling in mixed models
+to_model$OPO <- as.factor(to_model$OPO)
 
 #for table S4
-tx_hr <- haven::read_sas("SAF 2018 Q3/tx_hr.sas7bdat", NULL) %>%  
+tx_hr <- haven::read_sas("/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/tx_hr.sas7bdat", NULL) %>%  
   haven::zap_formats() %>% haven::zap_labels()
 
 to_model
@@ -92,12 +95,10 @@ to_model
 
 ```{r formulas_nested_models}
 #three-status, donor quality, and transplant year
-three_status <- "Surv(t_1, t_2, dead) ~ tx*(stat_2 + stat_1b) 
-+ tx_risky_don + era_tx"
+three_status <- "Surv(t_1, t_2, dead) ~ tx*(stat_2 + stat_1b) + tx_risky_don + era_tx"
 
 #six-status, donor quality and transplant year
-six_status <- "Surv(t_1, t_2, dead) ~ tx*(status_2 + status_3 + status_4 + status_6) + 
-tx_risky_don + era_tx"
+six_status <- "Surv(t_1, t_2, dead) ~ tx*(status_2 + status_3 + status_4 + status_6) + tx_risky_don + era_tx"
 ```
 
 
@@ -131,7 +132,7 @@ for (i in seq_along(formulas)) {
 me_models <-  vector(mode = "list", length(formulas))
 
 for (i in seq_along(formulas)) {
-  f_coxme <- as.formula(paste(formulas[[i]], " + (1+ tx|center)"))
+  f_coxme <- as.formula(paste(formulas[[i]], " + (1+ tx|OPO)"))
   start_time <- Sys.time()
   three_status <- coxme(f_coxme, data = to_model)
   me_models[[i]] <- three_status 
@@ -142,7 +143,7 @@ for (i in seq_along(formulas)) {
 }
 
 
-#save.image("model_fit.RData")
+save.image("model_fit.RData")
 ```
 
 
@@ -205,12 +206,12 @@ The calculated variance in the survival benefit of transplant $B = Tx - Wait$ in
 ```{r hr_tx_ij}
 hr_tx_ij <- function(model = three_status, df= to_model, i, j){
   #this function returns the log hazard ratio of transplant 
-  #for patient j transplanted at center i for a given coxme model  
+  #for patient j transplanted at OPO i for a given coxme model  
   fixed_effects <- fixef(model)
   x_vars <- names(fixed_effects)
   ref <- data.frame(ranef(model)[[1]])
-  ref$center <- row.names(ref)
-  tx_ref <- filter(ref, center == i)$tx
+  ref$OPO <- row.names(ref)
+  tx_ref <- filter(ref, OPO == i)$tx
   
   is_int <- function(x) grepl("tx:", x)
   ints <- x_vars[sapply(x_vars, is_int)]
@@ -248,11 +249,12 @@ b_ij <- function(df, base_hz, model, i, j){
 
 fixed_effects <- fixef(model)
 x_vars <- names(fixed_effects)
+base_vars <- x_vars[!grepl(":", x_vars)]
 ref <- data.frame(ranef(model)[[1]])
-ref$center <- row.names(ref)
+ref$OPO <- row.names(ref)
 
 d_ij <- df %>% filter(PX_ID == j) %>% 
-  select(PX_ID, t_1, t_2, dead, one_of(x_vars)) %>% 
+  select(PX_ID, t_1, t_2, dead, one_of(base_vars)) %>% 
   mutate(time = t_1, 
          time  = ifelse(time==0, 1, time), 
          fe_lp = 0, lp_no_tx = 0)
@@ -290,19 +292,19 @@ d_ij <- left_join(base_hz, d_ij, by = c("time")) %>%
 d_ij <- d_ij %>% 
   mutate_all(funs(na.locf(., na.rm = FALSE)))
 
-ctr_i_b0 <- ref[ref$center == i,]$Intercept
-ctr_i_b1 <- ref[ref$center == i,]$tx
+OPO_i_b0 <- ref[ref$OPO == i,]$Intercept
+OPO_i_b1 <- ref[ref$OPO == i,]$tx
 
 d_ij <- d_ij %>% mutate(
 	fe_wait = lp_no_tx,
 	fe_tx = fe_lp,
-	ctr_hz_wait = hz_t*exp(fe_wait + ctr_i_b0),
-	ctr_hz_tx = hz_t*exp(fe_tx + ctr_i_b0 + ctr_i_b1)
+	OPO_hz_wait = hz_t*exp(fe_wait + OPO_i_b0),
+	OPO_hz_tx = hz_t*exp(fe_tx + OPO_i_b0 + OPO_i_b1)
 	) %>%
-	mutate(wait_surv = cumprod(1-ctr_hz_wait)) %>% 
+	mutate(wait_surv = cumprod(1-OPO_hz_wait)) %>% 
 	group_by(tx) %>% 
 	mutate(
-		surv_post_tx = if_else( tx ==1, cumprod(1-ctr_hz_tx), NULL), 
+		surv_post_tx = if_else( tx ==1, cumprod(1-OPO_hz_tx), NULL), 
 		surv_post_tx = max(wait_surv)*surv_post_tx) %>% ungroup()
 
 tx_point <- d_ij %>% 
@@ -366,8 +368,438 @@ Warnings:
 
 
 ```{r wait_tx_5_year}
-ben_wait_tx <- function(df = to_model, 
-                        base_hz = basehz, 
+# ben_wait_tx <- function(df = to_model,
+#                         base_hz = basehz,
+#                         model = three_status, i, j, end_times = 1825){
+# 
+# 
+# 
+# 
+# max_end_time <- max(end_times)
+# 
+# fixed_effects <- fixef(model)
+# x_vars <- names(fixed_effects)
+# ref <- data.frame(ranef(model)[[1]])
+# ref$OPO <- row.names(ref)
+# 
+# d_ij <- df %>%
+#   filter(PX_ID == j) %>%
+#   select(PX_ID, t_1, t_2, dead, one_of(x_vars)) %>%
+#   mutate(time = t_1,
+#          time  = ifelse(time==0, 1, time),
+#          fe_lp = 0,
+#          lp_no_tx = 0)
+# 
+# for (x in x_vars) {
+# 	fe_x <- unname(fixed_effects[x])
+# 
+# 	if(grepl("tx:", x) == FALSE){
+# 		d_ij$c_x <- d_ij[[x]]
+# 	}
+# 	##add code to deal with interaction terms here
+# 	if(grepl("tx:", x) == TRUE){
+# 	  c_list <- strsplit(x, ":")
+# 	  int_var <- c_list[[1]][2]
+# 	  d_ij$c_x <- d_ij[[int_var]]*d_ij[["tx"]]
+# 	}
+# 
+# 	d_ij <- d_ij %>% mutate(fe_lp = fe_lp + c_x*fe_x) %>% select(-c_x)
+# }
+# 
+# ###Hypothetical when patient has always been transplanted
+# non_tx_terms <- lapply(x_vars, function(x) if(grepl("tx", x) == FALSE) x)
+# non_tx_terms <- non_tx_terms[-which(sapply(non_tx_terms, is.null))]
+# 
+# for (x in non_tx_terms) {
+# 	fe_x <- unname(fixed_effects[x])
+# 	d_ij$c_x <- d_ij[[x]]
+# 	d_ij <- d_ij %>% mutate(lp_no_tx = lp_no_tx + c_x*fe_x) %>% select(-c_x)
+# }
+# 
+# 
+# d_ij <- left_join(base_hz, d_ij, by = c("time")) %>% select(-t_1, -t_2)
+# 
+# d_ij <- d_ij %>%
+#   mutate_all(funs(na.locf(., na.rm = FALSE))) %>%
+#   filter(tx ==1) %>%
+#   mutate(time = time - min(time)+1)
+# 
+# OPO_i_b0 <- ref[ref$OPO == i,]$Intercept
+# OPO_i_b1 <- ref[ref$OPO == i,]$tx
+# 
+# d_ij <- d_ij %>% mutate(
+# 	fe_wait = lp_no_tx,
+# 	fe_tx = fe_lp,
+# 	OPO_hz_wait = hz_t*exp(fe_wait + OPO_i_b0),
+# 	OPO_hz_tx = hz_t*exp(fe_tx + OPO_i_b0 + OPO_i_b1)
+# 	) %>%
+# 	mutate(wait_surv = cumprod(1-OPO_hz_wait)) %>%
+# 	group_by(tx) %>%
+# 	mutate(
+# 		surv_post_tx = if_else( tx ==1, cumprod(1-OPO_hz_tx), rep(NA_real_, n())),
+# 		surv_post_tx = max(wait_surv)*surv_post_tx) %>% ungroup()
+# 
+# 
+# d_ij <- d_ij %>%
+#   filter(time <= max_end_time) %>%
+#   mutate(surv_benefit = surv_post_tx - wait_surv)
+# 
+# if (nrow(d_ij)==0) warning(paste0("Candidate ", j, " not transplanted"))
+# 
+# 
+#   s_benefit <- vector(mode = "numeric", length = 2)
+# 
+#   wait_5 <- filter(d_ij, time == end_times)$wait_surv
+#   post_5 <- filter(d_ij, time == end_times)$surv_post_tx
+# 
+#   if (length(wait_5) == 0){
+#      wait_5 <- NA
+#   }
+# 
+#   if (length(post_5)==0){
+#      post_5 <- NA
+#   }
+# 
+#   s_benefit[[1]] <- wait_5
+# 
+#   s_benefit[[2]] <- post_5
+# 
+# 	return(s_benefit)
+# 
+# }
+```
+
+```{r wait_tx_5_year_v2}
+# # V2
+# ben_wait_tx <- function(df = to_model,
+#                         base_hz = basehz,
+#                         model = three_status, i, j, end_times = 1825){
+# 
+#   max_end_time <- max(end_times)
+# 
+#   fixed_effects <- fixef(model)
+#   x_vars <- names(fixed_effects)
+#   # random effects frame — ensure column names are what we expect
+#   ref <- as.data.frame(ranef(model)[[1]])
+#   ref$OPO <- row.names(ranef(model)[[1]])
+# 
+#   d_ij <- df %>%
+#     filter(PX_ID == j) %>%
+#     select(PX_ID, t_1, t_2, dead, one_of(x_vars)) %>%
+#     mutate(time = t_1,
+#            time  = ifelse(time==0, 1, time),
+#            fe_lp = 0,
+#            lp_no_tx = 0)
+# 
+#   # build linear predictors from fixed effects
+#   for (x in x_vars) {
+#     fe_x <- unname(fixed_effects[x])
+# 
+#     if (!grepl("tx:", x)) {
+#       d_ij$c_x <- d_ij[[x]]
+#     } else {
+#       c_list <- strsplit(x, ":")[[1]]
+#       int_var <- c_list[2]
+#       d_ij$c_x <- d_ij[[int_var]] * d_ij[["tx"]]
+#     }
+# 
+#     d_ij <- d_ij %>% mutate(fe_lp = fe_lp + c_x * fe_x) %>% select(-c_x)
+#   }
+# 
+#   ### Hypothetical when patient has always been transplanted
+#   non_tx_terms <- x_vars[!grepl("tx", x_vars)]
+#   for (x in non_tx_terms) {
+#     fe_x <- unname(fixed_effects[x])
+#     d_ij$c_x <- d_ij[[x]]
+#     d_ij <- d_ij %>% mutate(lp_no_tx = lp_no_tx + c_x * fe_x) %>% select(-c_x)
+#   }
+# 
+#   # join baseline hazard by time
+#   d_ij <- left_join(base_hz, d_ij, by = c("time")) %>%
+#     select(-t_1, -t_2)
+# 
+#   # carry forward NAs (as before)
+#   d_ij <- d_ij %>% mutate_all(~ zoo::na.locf(., na.rm = FALSE))
+# 
+#   # keep only person rows where tx == 1 and rebase time to transplant
+#   d_ij <- d_ij %>% filter(tx == 1)
+#   if (nrow(d_ij) == 0) {
+#     warning(paste0("Candidate ", j, " not transplanted"))
+#     return(c(NA_real_, NA_real_))
+#   }
+#   d_ij <- d_ij %>% mutate(time = time - min(time) + 1)
+# 
+#   # Extract OPO random effect(s) safely and coerce to single scalars
+#   row_ref <- ref[ref$OPO == as.character(i), , drop = FALSE]
+# 
+#   if (nrow(row_ref) == 0) {
+#     # no random effect for this OPO — treat as zero (or you can return NA)
+#     OPO_i_b0 <- 0
+#     OPO_i_b1 <- 0
+#     warning(paste0("No random effect found for OPO = ", as.character(i),
+#                    ". Using 0 for intercept and tx RE."))
+#   } else {
+#     # if multiple rows found for the OPO, pick the first and warn
+#     if (nrow(row_ref) > 1) {
+#       warning(paste0("Multiple random-effect rows found for OPO = ", as.character(i),
+#                      ". Using the first row."))
+#     }
+#     # rename defensive: allow both "Intercept"/"tx" or "(Intercept)"/"tx"
+#     if ("Intercept" %in% colnames(row_ref)) {
+#       OPO_i_b0 <- as.numeric(row_ref$Intercept[1])
+#     } else if ("(Intercept)" %in% colnames(row_ref)) {
+#       OPO_i_b0 <- as.numeric(row_ref[["(Intercept)"]][1])
+#     } else {
+#       stop("Unexpected ranef column name for intercept; expected 'Intercept' or '(Intercept)'.")
+#     }
+#     # tx random effect
+#     if ("tx" %in% colnames(row_ref)) {
+#       OPO_i_b1 <- as.numeric(row_ref$tx[1])
+#     } else {
+#       OPO_i_b1 <- 0
+#       warning("No 'tx' random-effect column found; using 0 for OPO tx effect.")
+#     }
+#   }
+# 
+#   # now compute hazards and survivals
+#   d_ij <- d_ij %>% mutate(
+#     fe_wait = lp_no_tx,
+#     fe_tx = fe_lp,
+#     # hz_t exists from base_hz join
+#     OPO_hz_wait = hz_t * exp(fe_wait + OPO_i_b0),
+#     OPO_hz_tx   = hz_t * exp(fe_tx + OPO_i_b0 + OPO_i_b1)
+#   ) %>%
+#     mutate(wait_surv = cumprod(1 - OPO_hz_wait)) %>%
+#     group_by(tx) %>%
+#     mutate(
+#       surv_post_tx = if_else(tx == 1, cumprod(1 - OPO_hz_tx), rep(NA_real_, n())),
+#       surv_post_tx = max(wait_surv, na.rm = TRUE) * surv_post_tx
+#     ) %>%
+#     ungroup()
+# 
+#   # truncate to requested end time
+#   d_ij <- d_ij %>% filter(time <= max_end_time) %>% mutate(surv_benefit = surv_post_tx - wait_surv)
+# 
+#   # return 2-element numeric: wait_5, post_5 (may be NA)
+#   wait_5 <- d_ij %>% filter(time == end_times) %>% pull(wait_surv)
+#   post_5 <- d_ij %>% filter(time == end_times) %>% pull(surv_post_tx)
+#   if (length(wait_5) == 0) wait_5 <- NA_real_
+#   if (length(post_5) == 0) post_5 <- NA_real_
+# 
+#   c(wait_5, post_5)
+# }
+```
+
+```{r wait_tx_5_year_v3}
+# # V3: data.table version for speed
+# library(data.table)
+# library(zoo)
+# 
+# # convert to data.table once
+# dt_model <- as.data.table(to_model)
+# 
+# # use the baseline hazard you already built for the model (hz_list[[1]])
+# # make sure basehz is a data.frame / data.table with columns time, hz_t
+# basehz_dt <- as.data.table(hz_list[[1]])   # or base_hz used previously; ensure it's correct
+# setkey(basehz_dt, time)
+# 
+# # fixed effects and ranef frame precomputed once
+# fixed_effects_vec <- fixef(three_status)    # or me_models[[1]] if you used that model
+# x_vars <- names(fixed_effects_vec)
+# 
+# ranef_df <- as.data.frame(ranef(three_status)[[1]])
+# ranef_df$OPO <- row.names(ranef(three_status)[[1]])
+# # ensure ranef_df columns named consistently: either "(Intercept)" or "Intercept"
+# # standardize names:
+# if ("(Intercept)" %in% colnames(ranef_df)) {
+#   ranef_df <- rename(ranef_df, Intercept = "(Intercept)")
+# }
+# 
+# # quick lookup table for recipients grouped by OPO (for tests)
+# recips_dt <- unique(dt_model[tx == 1, .(PX_ID, OPO)])
+# setkey(recips_dt, OPO)
+# 
+# ben_wait_tx_fast <- function(px_id,
+#                              opo,
+#                              dt_model,
+#                              basehz_dt,
+#                              fixed_effects_vec,
+#                              ranef_df,
+#                              x_vars,
+#                              end_times = 1825) {
+# 
+#   # fast subset (very cheap)
+#   d_ij <- dt_model[PX_ID == px_id]
+# 
+#   if (nrow(d_ij) == 0) {
+#     warning("No rows for PX_ID: ", px_id)
+#     return(c(NA_real_, NA_real_))
+#   }
+# 
+#   # keep only needed columns: time columns + covariates + tx
+#   keep_cols <- unique(c("PX_ID", "t_1", "t_2", "dead", "tx", x_vars))
+#   keep_cols <- intersect(keep_cols, colnames(d_ij))
+#   d_ij <- d_ij[, ..keep_cols]
+# 
+#   # time variable
+#   d_ij[, time := t_1]
+#   d_ij[, time := fifelse(time == 0, 1L, time)]
+# 
+#   # If recipient never transplanted -> return NA
+#   if (!any(d_ij$tx == 1, na.rm = TRUE)) {
+#     # candidate not transplanted
+#     return(c(NA_real_, NA_real_))
+#   }
+# 
+#   # join baseline hazard quickly (many rows but basehz small)
+#   d_ij <- merge(basehz_dt, d_ij, by = "time", all.x = FALSE, all.y = TRUE, sort = FALSE)
+# 
+#   # carry forward NAs for columns that matter (hz_t and other covariates)
+#   covs_to_fill <- c("hz_t", intersect(x_vars, colnames(d_ij)), "tx")
+#   for (col in covs_to_fill) {
+#     if (col %in% colnames(d_ij)) d_ij[[col]] <- zoo::na.locf(d_ij[[col]], na.rm = FALSE)
+#   }
+# 
+#   # keep only post-transplant rows (tx == 1) and rebase time
+#   d_ij <- d_ij[tx == 1]
+#   if (nrow(d_ij) == 0) return(c(NA_real_, NA_real_))
+#   d_ij[, time := time - min(time) + 1L]
+# 
+#   # Build design matrix (vectorized)
+#   # For each fixed effect name x in x_vars:
+#   # - if it's an interaction like "tx:age", design column = age * tx
+#   # - else design column = value of the variable
+#   design_cols <- character(0)
+#   design_mat <- matrix(0, nrow = nrow(d_ij), ncol = length(x_vars))
+#   col_idx <- 1L
+#   for (x in x_vars) {
+#     if (grepl(":", x, fixed = TRUE)) {
+#       parts <- strsplit(x, ":", fixed = TRUE)[[1]]
+#       # assuming pattern tx:VAR or VAR:tx
+#       if ("tx" %in% parts) {
+#         other <- parts[parts != "tx"]
+#         if (length(other) != 1) stop("Unexpected interaction term: ", x)
+#         varname <- other
+#         if (!(varname %in% colnames(d_ij))) {
+#           # missing covariate, filled with zeros
+#           design_mat[, col_idx] <- 0
+#         } else {
+#           design_mat[, col_idx] <- d_ij[[varname]] * d_ij[["tx"]]
+#         }
+#         design_cols <- c(design_cols, x)
+#       } else {
+#         # general interaction — try multiply columns if present
+#         if (all(parts %in% colnames(d_ij))) {
+#           tmp <- d_ij[[parts[1]]]
+#           for (k in 2:length(parts)) tmp <- tmp * d_ij[[parts[k]]]
+#           design_mat[, col_idx] <- tmp
+#         } else {
+#           design_mat[, col_idx] <- 0
+#         }
+#         design_cols <- c(design_cols, x)
+#       }
+#     } else {
+#       # main effect
+#       if (x %in% colnames(d_ij)) {
+#         design_mat[, col_idx] <- d_ij[[x]]
+#       } else {
+#         design_mat[, col_idx] <- 0
+#       }
+#       design_cols <- c(design_cols, x)
+#     }
+#     col_idx <- col_idx + 1L
+#   }
+# 
+#   # vectorized linear predictor: fe_lp and lp_no_tx (hypothetical always transplanted)
+#   # fe_lp = design_mat %*% fixed_effects_vec
+#   fe_lp_vec <- as.numeric(design_mat %*% as.numeric(fixed_effects_vec))
+#   # For lp_no_tx: zero out columns containing "tx" in their name
+#   tx_cols <- grepl("tx", design_cols, fixed = TRUE)
+#   design_mat_no_tx <- design_mat
+#   if (any(tx_cols)) design_mat_no_tx[, tx_cols] <- 0
+#   lp_no_tx_vec <- as.numeric(design_mat_no_tx %*% as.numeric(fixed_effects_vec))
+# 
+#   # attach to d_ij
+#   d_ij[, fe_lp := fe_lp_vec]
+#   d_ij[, lp_no_tx := lp_no_tx_vec]
+# 
+#   # get OPO random effect row (scalar intercept and tx)
+#   row_ref <- ranef_df[ranef_df$OPO == as.character(opo), , drop = FALSE]
+#   if (nrow(row_ref) == 0) {
+#     OPO_i_b0 <- 0
+#     OPO_i_b1 <- 0
+#   } else {
+#     if (nrow(row_ref) > 1) warning("Multiple ranef rows for OPO ", opo, " — using first")
+#     OPO_i_b0 <- if ("Intercept" %in% colnames(row_ref)) as.numeric(row_ref$Intercept[1]) else as.numeric(row_ref[[1]][1])
+#     OPO_i_b1 <- if ("tx" %in% colnames(row_ref)) as.numeric(row_ref$tx[1]) else 0
+#   }
+# 
+#   # compute hazards and survival (vectorized)
+#   d_ij[, OPO_hz_wait := hz_t * exp(lp_no_tx + OPO_i_b0)]
+#   d_ij[, OPO_hz_tx   := hz_t * exp(fe_lp + OPO_i_b0 + OPO_i_b1)]
+# 
+#   # cumulative survival
+#   d_ij[, wait_surv := cumprod(1 - OPO_hz_wait)]
+#   # surv_post_tx (for tx rows)
+#   d_ij[, surv_post_tx := cumprod(1 - OPO_hz_tx)]
+#   # scale post_tx to start at same place as wait_surv at transplant time
+#   max_wait <- max(d_ij$wait_surv, na.rm = TRUE)
+#   d_ij[, surv_post_tx := max_wait * surv_post_tx]
+# 
+#   # truncate and compute benefit
+#   d_ij <- d_ij[time <= end_times]
+#   # pick the value at end_times (may be missing)
+#   wait_5 <- d_ij[time == end_times, wait_surv]
+#   post_5 <- d_ij[time == end_times, surv_post_tx]
+#   if (length(wait_5) == 0) wait_5 <- NA_real_
+#   if (length(post_5) == 0) post_5 <- NA_real_
+#   c(wait_5, post_5)
+# }
+# 
+# # pick test OPO
+# test_opo <- unique(recips_dt$OPO)[1]
+# test_recips <- recips_dt[OPO == test_opo, PX_ID]
+# 
+# # time the test
+# system.time({
+#   test_res_list <- sapply(test_recips, function(px) {
+#     ben_wait_tx_fast(px_id = px,
+#                      opo = test_opo,
+#                      dt_model = dt_model,
+#                      basehz_dt = basehz_dt,
+#                      fixed_effects_vec = fixed_effects_vec,
+#                      ranef_df = ranef_df,
+#                      x_vars = x_vars,
+#                      end_times = 1825)
+#   }, simplify = FALSE)
+# })
+# # check one result
+# str(test_res_list[[1]])
+# 
+# library(parallel)
+# opos <- unique(recips_dt$OPO)
+# 
+# no_cores <- max(1, detectCores() - 1)
+# cl <- makeCluster(no_cores, type = "FORK") # FORK works on unix-like; use PSOCK on Windows
+# 
+# clusterExport(cl, c("dt_model", "basehz_dt", "fixed_effects_vec", "ranef_df", "x_vars", "ben_wait_tx_fast"), envir = environment())
+# clusterEvalQ(cl, library(data.table))
+# clusterEvalQ(cl, library(zoo))
+# 
+# # For each OPO, compute a matrix of results (recips x 2)
+# results_by_opo <- parLapply(cl, opos, function(o) {
+#   recs <- recips_dt[OPO == o, PX_ID]
+#   res <- sapply(recs, function(px) ben_wait_tx_fast(px, o, dt_model, basehz_dt, fixed_effects_vec, ranef_df, x_vars, end_times = 1825), simplify = "matrix")
+#   # sapply with simplify="matrix" returns 2 x N matrix
+#   t(res) # return N x 2 matrix
+# })
+# stopCluster(cl)
+
+```
+
+```{r wait_tx_5_year_gem_v2}
+ben_wait_tx <- function(df = to_model,
+                        base_hz = basehz,
                         model = three_status, i, j, end_times = 1825){
 
 
@@ -377,15 +809,16 @@ max_end_time <- max(end_times)
 
 fixed_effects <- fixef(model)
 x_vars <- names(fixed_effects)
+base_vars <- x_vars[!grepl(":", x_vars)]
 ref <- data.frame(ranef(model)[[1]])
-ref$center <- row.names(ref)
+ref$OPO <- row.names(ref)
 
-d_ij <- df %>% 
-  filter(PX_ID == j) %>% 
-  select(PX_ID, t_1, t_2, dead, one_of(x_vars)) %>% 
-  mutate(time = t_1, 
-         time  = ifelse(time==0, 1, time), 
-         fe_lp = 0, 
+d_ij <- df %>%
+  filter(PX_ID == j) %>%
+  select(PX_ID, t_1, t_2, dead, one_of(base_vars)) %>%
+  mutate(time = t_1,
+         time  = ifelse(time==0, 1, time),
+         fe_lp = 0,
          lp_no_tx = 0)
 
 for (x in x_vars) {
@@ -417,98 +850,113 @@ for (x in non_tx_terms) {
 
 d_ij <- left_join(base_hz, d_ij, by = c("time")) %>% select(-t_1, -t_2)
 
-d_ij <- d_ij %>% 
-  mutate_all(funs(na.locf(., na.rm = FALSE))) %>% 
-  filter(tx ==1) %>% 
+d_ij <- d_ij %>%
+  mutate_all(funs(na.locf(., na.rm = FALSE))) %>%
+  filter(tx ==1) %>%
   mutate(time = time - min(time)+1)
 
-ctr_i_b0 <- ref[ref$center == i,]$Intercept
-ctr_i_b1 <- ref[ref$center == i,]$tx
+# Clean up OPO ID lookup section:
+# Convert i to character for robust lookup (needed because your global OPO names might be factors)
+opo_key <- as.character(i)
 
+# Perform the lookup once, using the correct key
+opo_i_b0_val <- ref[ref$OPO == opo_key,]$Intercept
+opo_i_b1_val <- ref[ref$OPO == opo_key,]$tx
+
+# CRITICAL FIX: Ensure OPO random effects are length 1 and handle NULL/length 0 case
+if (length(opo_i_b0_val) == 0) {
+ warning(paste0("OPO ", opo_key, " not found in random effects table."))
+ return(c(NA, NA))
+}
+if (length(opo_i_b0_val) > 1) {
+ # This should now fire only if there's a serious data issue, not NA coercion
+ stop(paste0("OPO ", opo_key, " returned multiple random effects."))
+}
+
+# The hazard calculation MUST use the validated variables (opo_i_b0_val/opo_i_b1_val)
 d_ij <- d_ij %>% mutate(
 	fe_wait = lp_no_tx,
 	fe_tx = fe_lp,
-	ctr_hz_wait = hz_t*exp(fe_wait + ctr_i_b0),
-	ctr_hz_tx = hz_t*exp(fe_tx + ctr_i_b0 + ctr_i_b1)
+	opo_hz_wait = hz_t*exp(fe_wait + opo_i_b0_val),
+	opo_hz_tx = hz_t*exp(fe_tx + opo_i_b0_val + opo_i_b1_val)
 	) %>%
-	mutate(wait_surv = cumprod(1-ctr_hz_wait)) %>% 
-	group_by(tx) %>% 
+	mutate(wait_surv = cumprod(1-opo_hz_wait)) %>%
+	group_by(tx) %>%
 	mutate(
-		surv_post_tx = if_else( tx ==1, cumprod(1-ctr_hz_tx), NULL), 
+		surv_post_tx = if_else( tx ==1, cumprod(1-opo_hz_tx), rep(NA_real_, n())),
 		surv_post_tx = max(wait_surv)*surv_post_tx) %>% ungroup()
 
 
-d_ij <- d_ij %>% 
-  filter(time <= max_end_time) %>% 
+d_ij <- d_ij %>%
+  filter(time <= max_end_time) %>%
   mutate(surv_benefit = surv_post_tx - wait_surv)
 
 if (nrow(d_ij)==0) warning(paste0("Candidate ", j, " not transplanted"))
 
 
   s_benefit <- vector(mode = "numeric", length = 2)
-  
+
   wait_5 <- filter(d_ij, time == end_times)$wait_surv
   post_5 <- filter(d_ij, time == end_times)$surv_post_tx
-  
+
   if (length(wait_5) == 0){
      wait_5 <- NA
   }
-  
+
   if (length(post_5)==0){
      post_5 <- NA
   }
-  
+
   s_benefit[[1]] <- wait_5
-  
+
   s_benefit[[2]] <- post_5
-  
+
 	return(s_benefit)
 
 }
-```
 
+```
 \pagebreak
 
-## Distribution of survival benefit at five years for each center (three-status system)
+## Distribution of survival benefit at five years for each OPO (three-status system)
 
 Warnings:
 
 * this loop takes advantage of parallel processing and will use most of your cores. 
 * Despite this expect long computational times.
 ```{r benefit_wait_post_5}
-
 detectCores()
 
 no_cores <- detectCores() - 2
 # Initiate cluster
 cl <- makeCluster(no_cores,  type="FORK")
 
-center_loop <- function(centers, recips, cl){
+OPO_loop <- function(OPOs, recips, cl){
 
   #output tibbles
   wait_surv <- tibble(recips = recips)
   post_tx_surv <- tibble(recips = recips)
   
-  for (c in centers) {
-  	cur_center <- as.numeric(c)
-  	print(paste0("currently calculating for center ", c))
+  for (o in OPOs) {
+  	cur_OPO <- o
+  	print(paste0("currently calculating for OPO ", o))
   	
   	B_i <- parSapply(cl, r_list, 
   	                 function(x) ben_wait_tx(j = x, 
   	                                         df = to_model, 
   	                                         base_hz = basehz, 
   	                                         model = three_status, 
-  	                                         i = cur_center))
+  	                                         i = cur_OPO))
   	
   	B_trans <- matrix(B_i, nrow = 2, ncol = length(recips)) %>% t()
   	B_tib <-  as.tibble(B_trans) 
 
 
   	wait <- B_tib %>% select(V1) %>% cbind(recips)
-  	colnames(wait) <- c(c, "recips")
+  	colnames(wait) <- c(o, "recips")
   	
   	post_tx <- B_tib %>% select(V2) %>% cbind(recips)
-  	colnames(post_tx) <- c(c, "recips")
+  	colnames(post_tx) <- c(o, "recips")
   	
   	wait_surv <- wait_surv %>% left_join(wait, by = "recips")
   	
@@ -521,19 +969,23 @@ center_loop <- function(centers, recips, cl){
   return(benefit)
 }
 
-
 r_list <- unique(filter(to_model, tx ==1)$PX_ID)
-c_list <- as.numeric(row.names(ranef(three_status)[[1]]))
+o_list <- row.names(ranef(three_status)[[1]])
+o_list <- o_list[!is.na(o_list)]
 
+# o_list_temp <- o_list[1:3]
+# by_time_tibbles <- OPO_loop(o_list_temp, r_list, cl)
 
-by_time_tibbles <- center_loop(c_list, r_list, cl)
-
+by_time_tibbles <- OPO_loop(o_list, r_list, cl)
 
 stopCluster(cl)
 
 five_yr_wait <- by_time_tibbles[[1]]
 
 five_yr_post <- by_time_tibbles[[2]]
+
+write_csv(five_yr_wait, "five_year_waits.csv")
+write_csv(five_yr_post, "five_year_posts.csv")
 ```
 
 ## Make datasets for use in Figures and Results Section
@@ -543,9 +995,36 @@ five_yr_post <- by_time_tibbles[[2]]
 recips <- to_model %>% group_by(PX_ID) %>% filter(tx == 1) %>% ungroup()
 
 #marginal distribution of benefit of transplant
-marginal_hazards <- mapply(hr_tx_ij, i = recips$center, j = recips$PX_ID)
 
-marginal_waits_posts <- mapply(ben_wait_tx, i = recips$center, j = recips$PX_ID)
+###test code - delete
+
+# 2. Create a sample of recipients for testing (e.g., 100 individuals)
+#set.seed(42) # Set seed for reproducibility
+#sample_size <- 3 
+
+#recips_sample <- recips %>% 
+#  sample_n(sample_size)
+
+# 3. Run marginal calculations on the sample
+#print(paste("Calculating marginal hazards for", sample_size, "recipients..."))
+
+# Marginal distribution of benefit of transplant (Hazard Ratio)
+#marginal_hazards_sample <- mapply(hr_tx_ij, 
+#                                  i = recips_sample$OPO, 
+#                                  j = recips_sample$PX_ID)
+
+# Marginal distribution of survival (Wait and Post-Tx)
+#marginal_waits_posts_sample <- mapply(ben_wait_tx, 
+#                                      i = recips_sample$OPO, 
+#                                      j = recips_sample$PX_ID) 
+
+# You can now inspect the results:
+#head(marginal_hazards_sample)
+#t(head(marginal_waits_posts_sample))
+
+marginal_hazards <- mapply(hr_tx_ij, i = recips$OPO, j = recips$PX_ID)
+
+marginal_waits_posts <- mapply(ben_wait_tx, i = recips$OPO, j = recips$PX_ID)
 
 marginal_waits <- marginal_waits_posts[1,]
 marginal_posts <- marginal_waits_posts[2,]
@@ -556,64 +1035,66 @@ pop_tx_hz <- recips %>% cbind(marginal_hazards, marginal_waits, marginal_posts) 
          benefit= marginal_posts- marginal_waits)
 
 r_list <- unique(filter(to_model, tx ==1)$PX_ID)
-c_list <- as.numeric(row.names(ranef(three_status)[[1]]))
+o_list <- row.names(ranef(three_status)[[1]])
 
-center_OPO <- recips %>% select(center, OPO) %>% 
-  group_by(center, OPO) %>% 
+OPO_counts <- recips %>% select(OPO) %>% 
+  group_by(OPO) %>% 
   summarise(num_tx = n()) %>% ungroup()
 
 re_effects <- data.frame(ranef(three_status)[[1]])
 
-re_effects$center <- row.names(re_effects)
+re_effects$OPO <- row.names(re_effects)
 
 colnames(re_effects)[2] <- "tx_re"
 
-#make a center level dataset of random effects
-center_re <- center_OPO %>% 
-  left_join(re_effects %>% mutate(center = as.numeric(center))) %>% 
+#make an OPO level dataset of random effects
+opo_re <- OPO_counts %>% 
+  left_join(re_effects, by="OPO") %>% 
   mutate(tx_exp = exp(tx_re),
          benefit = tx_re-Intercept,
          intercept_exp = exp(Intercept)) %>% ungroup()
 
-center_re <- center_re %>% left_join(five_year_means)
+opo_re <- opo_re %>% left_join(five_year_means)
 
 #calculate the minimum and maximum center
-min_tx_exp <- min(center_re$tx_exp)
+min_tx_exp <- min(opo_re$tx_exp)
 
-max_tx_exp <- max(center_re$tx_exp)
+max_tx_exp <- max(opo_re$tx_exp)
 
-min_int_exp <- min(center_re$intercept_exp)
+min_int_exp <- min(opo_re$intercept_exp)
 
-max_int_exp <- max(center_re$intercept_exp)
+max_int_exp <- max(opo_re$intercept_exp)
 ```
 
 
 
 ```{r summarize_five_year_benefit}
 
-#make benefit dataframe- hypothetical estimates as if all recipients were transplanted at the center
-colnames(five_yr_wait) <- c("recips", c_list)
-colnames(five_yr_post) <- c("recips", c_list)
+#make benefit dataframe- hypothetical estimates as if all recipients were transplanted at the OPO
+colnames(five_yr_wait) <- c("recips", o_list)
+colnames(five_yr_post) <- c("recips", o_list)
 
 M <- merge(five_yr_post,five_yr_wait,by="recips")
 
 ben_five_year_only <- M[,grepl("*\\.x$",names(M))] - M[,grepl("*\\.y$",names(M))]
+
+names(ben_five_year_only) <- gsub(pattern = "\\.x$", replacement = "", x = names(ben_five_year_only))
 
 cbind(M[,1,drop=FALSE],ben_five_year_only)
 remove(M)
 
 five_year_waits <- five_yr_wait %>% select(-recips) %>% 
   summarise_all(mean, na.rm =TRUE) %>% 
-  gather(value = mean_five_year_wait, key = center) %>% 
-  select(center, mean_five_year_wait) %>% mutate(center = as.numeric(center))
+  gather(value = mean_five_year_wait, key = OPO) %>% 
+  select(OPO, mean_five_year_wait)
 
 five_year_posts <- five_yr_post %>% select(-recips) %>% 
   summarise_all(mean, na.rm =TRUE) %>% 
-  gather(value = mean_five_year_post, key = center) %>% 
-  select(center, mean_five_year_post) %>% mutate(center = as.numeric(center))
+  gather(value = mean_five_year_post, key = OPO) %>% 
+  select(OPO, mean_five_year_post)
 
 
-#center level dataset of summary statistics for case-mix adjusted 
+#OPO level dataset of summary statistics for case-mix adjusted 
 #five-year mean waitlist, post-transplant, and survival benefits
 five_year_means <- ben_five_year_only %>% 
   summarise_all(funs(mean, 
@@ -623,12 +1104,12 @@ five_year_means <- ben_five_year_only %>%
                      lowQR = quantile(., probs=0.25), 
                      upQR = quantile(., probs=0.75)), na.rm = TRUE) %>%
   gather(key = "key", value = "value") %>%
-  separate(key, c("center", "stat"), sep = "_") %>%
+  separate(key, c("OPO", "stat"), sep = "_") %>%
   spread(stat, value) %>% 
-  mutate(center = numextract(center), mean_five_year = mean) %>% select(-mean) %>%
-  left_join(five_year_waits, by = "center") %>% 
-  left_join(five_year_posts, by = "center") %>%  
-  left_join(center_OPO, by = "center")
+  mutate(mean_five_year = mean) %>% select(-mean) %>%
+  left_join(five_year_waits, by = "OPO") %>% 
+  left_join(five_year_posts, by = "OPO") %>%  
+  left_join(OPO_counts, by = "OPO")
 
 five_year_means <- five_year_means %>%
   mutate(se_mean = sd/sqrt(num_tx),
@@ -636,11 +1117,11 @@ five_year_means <- five_year_means %>%
          lower_ci = mean_five_year - 1.96*se_mean,
          sig_better = if_else(lower_ci >mean(five_year_means$mean_five_year), 1, 0),
          sig_worse = if_else(upper_ci <mean(five_year_means$mean_five_year), 1, 0),
-         center_performance = case_when(
+         opo_performance = case_when(
            lower_ci >mean(five_year_means$mean_five_year) ~ "High",
            upper_ci <mean(five_year_means$mean_five_year) ~ "Low",
            TRUE ~ "Average"
-         ), center_performance = factor(center_performance, 
+         ), opo_performance = factor(opo_performance, 
                                         levels = c("Low", "Average", "High")))
 
 ```
@@ -648,12 +1129,12 @@ five_year_means <- five_year_means %>%
 ```{r six_status_pop, warning= FALSE, message = FALSE}
 #marginal distribution of benefit of transplant under six status model
 marginal_hazards_6_stat <- mapply(hr_tx_ij, 
-                                  i = recips$center, 
+                                  i = recips$OPO, 
                                   j = recips$PX_ID, 
                                   MoreArgs = list(model = six_status))
 
 marginal_waits_posts_6_stat <- mapply(ben_wait_tx, 
-                                      i = recips$center, 
+                                      i = recips$OPO, 
                                       j = recips$PX_ID,  
                                       MoreArgs = list(base_hz = basehz_six_stat,
                                                       model = six_status))
@@ -666,7 +1147,7 @@ pop_tx_hz_6_stat <- recips %>% cbind(marginal_waits_6_stat, marginal_posts_6_sta
   mutate(benefit_6 = marginal_posts_6_stat - marginal_waits_6_stat)
 
 #not run- save workspace image
-#save.image("model_fit_06_15_w_benefits.RData")
+save.image("model_fit_06_15_w_benefits.RData")
 ```
 
 \pagebreak
@@ -690,17 +1171,17 @@ catepillar <- ggplot(to_plot, aes(x = index,
                     y = mean_five_year*100, 
                     ymin = lower_ci*100, 
                     ymax = upper_ci*100, 
-                    color = center_performance)) + 
+                    color = opo_performance)) + 
   geom_point() + 
   geom_errorbar() + 
-  scale_color_manual(name = "Center benefit:",
+  scale_color_manual(name = "OPO benefit:",
                      values= c("red3","black","navyblue"), 
                      guide = guide_legend()) +
   
-  scale_x_continuous(breaks = c(1, 113)) +
+  scale_x_continuous(breaks = c(1, 53)) +
   scale_y_continuous(breaks = seq(25, 60, 5), limits = c(25, 60)) +
   labs(y = "Absolute five-year survival benefit \nof heart transplant (%)",
-       x = "Center", color = "") +  
+       x = "OPO", color = "") +  
   theme_few() + 
   theme(axis.title = element_text(), 
         axis.title.y = element_text(), 
@@ -733,9 +1214,9 @@ box <- ggplot(to_plot %>% mutate(all = " "), aes(x = all, y = 100*mean_five_year
 fig_2 <- grid.arrange(catepillar, box,
                          nrow=1, widths = c(1, 0.25))
 
-num_high <- table(five_year_means$center_performance)["High"][[1]]
+num_high <- table(five_year_means$opo_performance)["High"][[1]]
 
-num_low <- table(five_year_means$center_performance)["Low"][[1]]
+num_low <- table(five_year_means$opo_performance)["Low"][[1]]
 
 max_benefit <- comma_2(100*max(to_plot$mean_five_year))
 
@@ -761,17 +1242,17 @@ The adjusted five-year survival benefit varied substantially by center, ranging 
 ## Figure 3: Relationship between Candidate Survival on the Waitlist, Recipient Post-Transplant Outcomes, and the Benefit of Heart Transplantation
 ```{r combined_figure_4_discrete, warning=FALSE, message= FALSE}
 
-panel_A <- ggplot(data = center_re, 
+panel_A <- ggplot(data = opo_re, 
                   aes(x = 100*mean_five_year_wait, 
                       y = 100*mean_five_year)) + 
-  geom_point(aes(color = center_performance), size = 2.5, alpha = 0.9) +
+  geom_point(aes(color = opo_performance), size = 2.5, alpha = 0.9) +
   #annotate("label", x = 25, y = 30, label = paste0("r = ", cor_model), size = 5) + 
   scale_x_continuous(name = "Five-year survival without transplant (%)", 
-                     limits = c(18, 44), 
-                     breaks =  c(20, 25, 30, 35, 40)) + 
-  scale_y_continuous(name = "Center five-year surival benefit (%)", 
-                     limits = c(27, 60), breaks = seq(30, 60, 5)) + 
-  scale_color_manual(name = "Center benefit:", 
+                     limits = c(28, 45), 
+                     breaks =  c(25, 30, 35, 40, 45, 50)) + 
+  scale_y_continuous(name = "OPO five-year surival benefit (%)", 
+                     limits = c(32, 55), breaks = seq(30, 60, 5)) + 
+  scale_color_manual(name = "OPO benefit:", 
                      values = c("red3","black","navyblue")) +
   theme_few() + 
   ggtitle("Panel A") + 
@@ -791,13 +1272,13 @@ mylegend <- g_legend(panel_A)
 
 
 
-panel_B <- ggplot(data = center_re, 
+panel_B <- ggplot(data = opo_re, 
                   aes(x = mean_five_year_post*100, y = 100*mean_five_year)) + 
-  geom_point(aes(color = center_performance), size = 2.5, alpha = 0.9) +
+  geom_point(aes(color = opo_performance), size = 2.5, alpha = 0.9) +
   scale_x_continuous(name = "Five-year post-transplant survival (%)", 
-                     limits = c(63, 89), 
-                     breaks =  c(65, 70, 75, 80, 85)) +
-  scale_y_continuous(limits = c(27, 60), breaks = seq(30, 60, 5)) +
+                     limits = c(70, 90), 
+                     breaks =  c(70, 75, 80, 85, 90)) +
+  scale_y_continuous(limits = c(32, 55), breaks = seq(30, 60, 5)) +
 scale_color_manual(values = c("red3","black","navyblue")) +
   theme_few() +
   ggtitle("Panel B")+
@@ -820,10 +1301,10 @@ fig_3 <- grid.arrange(
 
 
 slope_waitlist <- lm(mean_five_year ~ mean_five_year_wait, 
-                                         data = center_re)
+                                         data = opo_re)
 
 slope_post <- lm(mean_five_year ~ mean_five_year_post, 
-                                         data = center_re)
+                                         data = opo_re)
 
 pct_benefit_increase_per_neg_10 <- comma_2(
   10*-slope_waitlist$coefficients[[2]])
@@ -1093,7 +1574,7 @@ Dot and box plot of estimated five-year survival benefit associated with heart t
 ```{r join_cand_thor_demos, message= FALSE, warning=FALSE}
 
 #for eTable4
-cand_thor <- haven::read_sas("SAF 2018 Q3/cand_thor.sas7bdat", NULL) %>%  
+cand_thor <- haven::read_sas('/Users/danieljohnson/Library/CloudStorage/Box-Box/SAF Q2 2025/pubsaf2506/cand_thor.sas7bdat', NULL) %>%  
   haven::zap_formats() %>% haven::zap_labels() 
 
 
